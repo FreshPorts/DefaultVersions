@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from default_version_change import detect_default_version_change
-from default_versions_config import default_version_vars
+from sync_default_version_variable import parse_default_versions_file, read_target_file
 
 TARGET_FILE = "Mk/bsd.default-versions.mk"
 
@@ -124,7 +124,10 @@ def main() -> int:
     varnames = (
         [v.strip() for v in args.vars.split(",") if v.strip()]
         if args.vars
-        else default_version_vars()
+        else [
+            v.name for v in parse_default_versions_file(read_target_file(args.repo))
+            if v.active
+        ]
     )
 
     try:

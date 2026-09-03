@@ -141,6 +141,60 @@ def parse_default_versions_file(text: str) -> list[ParsedVar]:
     return sorted(results, key=lambda v: v.name)
 
 
+POSSIBLE_VALUES_RE = re.compile(r"possible[_ ]values?:\s*(.+)", re.IGNORECASE)
+
+
+def extract_possible_values(text: str, varname: str) -> list[str]:
+    """
+    Scan the file for a "# Possible values: a, b, c" (or "Possible
+    value:", or "Possible_values:") style comment immediately
+    preceding an assignment line for `varname`, and return the listed
+    tokens.
+
+    This is what lets differential probing use a REAL alternate value
+    instead of a made-up sentinel -- necessary for *_DEFAULT variables
+    (like PYTHON_DEFAULT) whose value selects a sibling port directory
+    rather than just flowing into a string comparison. A fake value
+    can't work for those no matter how it's formatted; a real
+    alternate always can.
+
+    Best-effort text scan, not a full parser -- if no matching comment
+    is found (or the format doesn't match), returns an empty list and
+    callers should fall back to sentinel probing.
+    """
+    lines = text.splitlines()
+    for i, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped.startswith("#"):
+            continue
+
+        content = stripped[1:].strip()
+        m = POSSIBLE_VALUES_RE.match(content)
+        if not m:
+            continue
+
+        # Does this comment actually precede an assignment for varname?
+        # Look ahead a few lines (skipping directives/blank/other comments)
+        # for the assignment.
+        for lookahead in lines[i + 1 : i + 6]:
+            la_stripped = lookahead.strip()
+            if not la_stripped:
+                continue
+            la_match = ASSIGNMENT_RE.match(la_stripped)
+            if la_match and la_match.group(1) == varname:
+                values_text = m.group(1)
+                # Strip a trailing parenthetical note, e.g.
+                # "1.20, 1.21 (Any other version is unsupported)".
+                values_text = re.split(r"\s*\(", values_text)[0]
+                tokens = [t.strip() for t in re.split(r"[,\s]+", values_text) if t.strip()]
+                return tokens
+            if la_stripped.startswith("#"):
+                continue  # multi-line comment block, keep looking
+            break  # hit a non-comment, non-matching-assignment line -- not ours
+
+    return []
+
+
 def read_target_file(repo: str) -> str:
     path = Path(repo) / TARGET_RELATIVE_PATH
     return path.read_text()
