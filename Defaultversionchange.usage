@@ -1,0 +1,12 @@
+from default_version_change import detect_default_version_change
+
+result = detect_default_version_change(
+    diff_text,
+    "PYTHON_DEFAULT",
+    "Mk/bsd.default-versions.mk",
+)
+
+if result.status == "changed":
+    ...  # result.old, result.new
+elif result.status == "anomaly":
+    ...  # log result.detail / result.raw for manual review
