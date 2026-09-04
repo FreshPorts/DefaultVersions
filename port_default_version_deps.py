@@ -1,6 +1,7 @@
 """
 port_default_version_deps.py
 
+
 Smple usage:
 
 [19:10 mydev dvl ~] % python3 ~/port_default_version_deps.py /usr/ports/lang/python --repo /usr/ports
@@ -53,6 +54,7 @@ class DependencyResult:
     baseline: Optional[dict] = None
     overridden: Optional[dict] = None
     probe_appears: Optional[bool] = None
+    probe_value: Optional[str] = None
     detail: Optional[str] = None
 
 
@@ -147,6 +149,7 @@ def port_depends_on_default_var(
             status="depends_error",
             default_var=default_var,
             baseline=baseline,
+            probe_value=chosen_probe,
             detail=f"`make -V` with {default_var}={chosen_probe} failed (exit {rc2}): {err2} {note}".strip(),
         )
 
@@ -158,6 +161,7 @@ def port_depends_on_default_var(
             baseline=baseline,
             overridden=overridden,
             probe_appears=probe_appears,
+            probe_value=chosen_probe,
         )
 
     return DependencyResult(status="independent", default_var=default_var, baseline=baseline)
