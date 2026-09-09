@@ -2,7 +2,7 @@
 port_default_version_deps.py
 
 
-Smple usage:
+Sample usage:
 
 [19:10 mydev dvl ~] % python3 ~/port_default_version_deps.py /usr/ports/lang/python --repo /usr/ports
 /usr/ports/lang/python: depends on PYTHON_DEFAULT (status=depends)
