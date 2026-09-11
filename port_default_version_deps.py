@@ -47,6 +47,21 @@ from typing import Optional
 
 VERSION_VARS = ("PORTVERSION", "DISTVERSION")
 DEFAULT_PROBE_VALUE = "999999.9999"
+# Numeric-shaped on purpose: some Uses/*.mk files (e.g. python.mk) run the
+# *_DEFAULT value through their own internal numeric version comparisons
+# (.for loops using "<" etc.) regardless of which variable is actually
+# being probed, and a non-numeric sentinel (the previous value here,
+# "999999.freshports-probe") makes those comparisons fatal-error out --
+# a false "depends_error" that has nothing to do with an actual
+# dependency. This value is still obviously out-of-range for any real
+# *_DEFAULT variable while being safe to compare numerically.
+#
+# This is still only a fallback: it does NOT help variables validated
+# against a whitelist of names rather than compared numerically (e.g.
+# SSL_DEFAULT's list of provider names) -- those need a real alternate
+# from possible_values, which is why extract_possible_values() finding
+# real values is the primary fix and this is the last-resort path for
+# variables with no "Possible values:" comment to draw from at all.
 
 
 @dataclass
