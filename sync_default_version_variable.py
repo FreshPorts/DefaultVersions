@@ -50,6 +50,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+# for FreshPorts database connection
+import configparser # for config.ini parsing
+import re           # for escaping the database passwords
+
+
 TARGET_RELATIVE_PATH = "Mk/bsd.default-versions.mk"
 
 # Matches an assignment line (after stripping any leading '#' + whitespace
@@ -331,8 +336,15 @@ def main() -> int:
 
     import psycopg2  # imported lazily -- not needed for --dry-run
 
+    config = configparser.ConfigParser()
+    config.read('/usr/local/etc/freshports/config.ini')
+
+    SCRIPT_DIR = config['filesystem']['SCRIPT_DIR']
+
+    DSN = 'host=' + config['database']['HOST'] + ' dbname=' + config['database']['DBNAME'] + ' user=' + config['database']['DEFAULTS_DBUSER'] + ' password=' + re.escape(config['database']['DEFAULTS_PASSWORD']) + ' sslcertmode=disable'
+
     if args.check:
-        conn = psycopg2.connect(args.dsn) if args.dsn else psycopg2.connect()
+        conn = psycopg2.connect(args.dsn) if args.dsn else psycopg2.connect(DSN)
         try:
             plan = compute_sync_plan(conn, records)
         finally:
@@ -358,7 +370,7 @@ def main() -> int:
 
         return 1 if drift else 0
 
-    conn = psycopg2.connect(args.dsn) if args.dsn else psycopg2.connect()
+    conn = psycopg2.connect(args.dsn) if args.dsn else psycopg2.connect(DSN)
     try:
         summary = sync_table(conn, records, hard_delete=args.hard_delete)
     finally:
