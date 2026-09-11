@@ -148,6 +148,11 @@ def parse_default_versions_file(text: str) -> list[ParsedVar]:
 
 POSSIBLE_VALUES_RE = re.compile(r"possible[_ ]values?:\s*(.+)", re.IGNORECASE)
 
+# Matches a comment line that's purely comma-separated tokens (no internal
+# whitespace within a token), used to detect when a "Possible values:" list
+# wraps onto the following comment line(s) vs. hitting unrelated prose.
+CONTINUATION_LIST_RE = re.compile(r"^[A-Za-z0-9_.\-]+(?:\s*,\s*[A-Za-z0-9_.\-]+)*,?$")
+
 
 def extract_possible_values(text: str, varname: str) -> list[str]:
     """
@@ -178,24 +183,55 @@ def extract_possible_values(text: str, varname: str) -> list[str]:
         if not m:
             continue
 
+        # The list itself may wrap onto subsequent comment lines (e.g.
+        # SSL_DEFAULT's "base, openssl, ..." list continues on the next
+        # line as "openssl36, libressl, libressl-devel"). Merge those
+        # continuation lines in, but only ones that look like pure
+        # comma-separated tokens -- an unrelated prose comment (like the
+        # "If no preference was set..." explanation that often follows)
+        # won't match this and correctly stops the merge.
+        values_text = m.group(1)
+        j = i + 1
+        while j < len(lines):
+            nxt = lines[j].strip()
+            if not nxt.startswith("#"):
+                break
+            nxt_content = nxt[1:].strip()
+            if CONTINUATION_LIST_RE.match(nxt_content):
+                values_text += " " + nxt_content
+                j += 1
+                continue
+            break
+
         # Does this comment actually precede an assignment for varname?
-        # Look ahead a few lines (skipping directives/blank/other comments)
-        # for the assignment.
-        for lookahead in lines[i + 1 : i + 6]:
+        # The real assignment may be nested behind .if/.elif guards -- e.g.
+        # SSL_DEFAULT checks for an already-installed provider before
+        # falling back to its default -- so keep scanning forward past
+        # directives, backslash-continued condition lines, blank lines,
+        # and other comments. Only stop early if we hit an assignment for
+        # a DIFFERENT *_DEFAULT variable, since that means we've wandered
+        # into the next variable's block without finding ours.
+        LOOKAHEAD_WINDOW = 40
+        for lookahead in lines[i + 1 : i + 1 + LOOKAHEAD_WINDOW]:
             la_stripped = lookahead.strip()
             if not la_stripped:
                 continue
-            la_match = ASSIGNMENT_RE.match(la_stripped)
-            if la_match and la_match.group(1) == varname:
-                values_text = m.group(1)
-                # Strip a trailing parenthetical note, e.g.
-                # "1.20, 1.21 (Any other version is unsupported)".
-                values_text = re.split(r"\s*\(", values_text)[0]
-                tokens = [t.strip() for t in re.split(r"[,\s]+", values_text) if t.strip()]
-                return tokens
             if la_stripped.startswith("#"):
                 continue  # multi-line comment block, keep looking
-            break  # hit a non-comment, non-matching-assignment line -- not ours
+
+            la_match = ASSIGNMENT_RE.match(la_stripped)
+            if la_match:
+                if la_match.group(1) == varname:
+                    # Strip a trailing parenthetical note, e.g.
+                    # "1.20, 1.21 (Any other version is unsupported)".
+                    final_values_text = re.split(r"\s*\(", values_text)[0]
+                    tokens = [t.strip() for t in re.split(r"[,\s]+", final_values_text) if t.strip()]
+                    return tokens
+                break  # assignment for a different variable -- not ours
+
+            # anything else -- .if/.elif/.endif directives, backslash-
+            # continued condition lines, etc. -- keep looking, the real
+            # assignment may be further down inside this nesting
 
     return []
 
