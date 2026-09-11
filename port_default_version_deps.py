@@ -4,13 +4,15 @@ port_default_version_deps.py
 
 Sample usage:
 
-[19:10 mydev dvl ~] % python3 ~/port_default_version_deps.py /usr/ports/lang/python --repo /usr/ports
-/usr/ports/lang/python: depends on PYTHON_DEFAULT (status=depends)
+$ cd /usr/local/libexec/freshports
+$ python3 ./port_default_version_deps.py /jails/freshports/usr/ports/lang/python
+/jails/freshports/usr/ports/lang/python: depends on PYTHON_DEFAULT (status=depends)
   baseline:   {'PORTVERSION': '3.12', 'DISTVERSION': '3.12'}
   overridden: {'PORTVERSION': '3.10', 'DISTVERSION': '3.10'}
-  
-[19:10 mydev dvl ~] % python3 ~/port_default_version_deps.py /usr/ports/net-mgmt/librenms --repo /usr/ports
-/usr/ports/net-mgmt/librenms: no dependency on any checked *_DEFAULT variable
+
+$ python3 ./port_default_version_deps.py /jails/freshports/usr/ports/net-mgmt/librenms
+/jails/freshports/usr/ports/net-mgmt/librenms: no dependency on any checked *_DEFAULT variable
+$
 
 Determines whether a given port's PORTVERSION/DISTVERSION depends on
 a *_DEFAULT variable (e.g. PYTHON_DEFAULT) -- by asking `make` itself,
@@ -44,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 VERSION_VARS = ("PORTVERSION", "DISTVERSION")
-DEFAULT_PROBE_VALUE = "999999.freshports-probe"
+DEFAULT_PROBE_VALUE = "999999.9999"
 
 
 @dataclass
