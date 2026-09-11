@@ -47,13 +47,27 @@ from sync_port_default_version_variable import sync_port_dependencies
 PROGRESS_EVERY = 500
 
 
-def get_active_ports(conn) -> list[dict]:
+def get_active_ports(conn, category: str = None, name: str = None) -> list[dict]:
     """
-    Returns [{'id': ..., 'name': ..., 'category': ...}, ...] for every
-    row in ports_active.
+    Returns [{'id': ..., 'name': ..., 'category': ...}, ...] from
+    ports_active, optionally filtered down to a single category and/or
+    port name at the SQL level (rather than pulling the whole table and
+    filtering in Python -- ports_active can be tens of thousands of rows).
     """
+    sql = "SELECT id, name, category FROM ports_active"
+    conditions = []
+    params = []
+    if category:
+        conditions.append("category = %s")
+        params.append(category)
+    if name:
+        conditions.append("name = %s")
+        params.append(name)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+
     cur = conn.cursor()
-    cur.execute("SELECT id, name, category FROM ports_active")
+    cur.execute(sql, params)
     return [
         {"id": row[0], "name": row[1], "category": row[2]}
         for row in cur.fetchall()
@@ -66,8 +80,16 @@ def main() -> int:
     parser.add_argument("--dsn", default=None, help="Postgres DSN (default: derived from config.ini, same as sync_default_version_variable.py)")
     parser.add_argument("--dry-run", action="store_true", help="Run the make -V checks but don't write to the DB")
     parser.add_argument("--category", default=None, help="Only process ports in this category (e.g. lang) -- useful for testing")
+    parser.add_argument("--port", default=None, help="Only process a single port, given as category/name (e.g. net-p2p/litecoin) -- overrides --category")
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N ports -- useful for testing")
     args = parser.parse_args()
+
+    port_category, port_name = None, None
+    if args.port:
+        if "/" not in args.port:
+            print(f"--port must be given as category/name (e.g. net-p2p/litecoin), got: {args.port}", file=sys.stderr)
+            return 1
+        port_category, port_name = args.port.split("/", 1)
 
     mk_text = read_target_file(args.repo)
     varnames = [v.name for v in parse_default_versions_file(mk_text) if v.active]
@@ -91,13 +113,13 @@ def main() -> int:
     conn = psycopg2.connect(dsn)
 
     try:
-        ports = get_active_ports(conn)
-        if args.category:
-            ports = [p for p in ports if p["category"] == args.category]
+        ports = get_active_ports(conn, category=port_category or args.category, name=port_name)
         if args.limit:
             ports = ports[: args.limit]
 
         print(f"found {len(ports)} active ports to check")
+        if args.port and not ports:
+            print(f"warning: no active port found matching {args.port} -- check spelling/category", file=sys.stderr)
 
         checked_count = 0
         depends_count = 0
