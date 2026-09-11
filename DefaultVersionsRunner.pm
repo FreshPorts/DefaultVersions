@@ -24,10 +24,10 @@ our @EXPORT_OK = qw(run_default_version_check);
 # Path to the Python script and the ports tree checkout. Package
 # variables (not constants) so callers/tests can override them, same
 # reasoning as $DefaultVersionCheck::REPO_DIR earlier.
-our $PYTHON_BIN    = 'python3';
-our $SCRIPT_PATH   = '/usr/local/freshports/bin/detect_default_version_changes.py';
-our $REPO_DIR      = '/usr/ports';
-our $OUTPUT_DIR    = '/var/freshports/work';   # TODO: point at your real work dir
+our $PYTHON_BIN    = '/usr/local/bin/python';
+our $SCRIPT_PATH   = '/usr/home/dvl/src/DefaultVersions/detect_default_version_changes.py';
+our $REPO_DIR      = '/jails/freshports/usr/ports';
+our $OUTPUT_DIR    = '/var/db/freshports/tmp';   # TODO: point at your real work dir
 
 # run_default_version_check($commit_sha)
 #
