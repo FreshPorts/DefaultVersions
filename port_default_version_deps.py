@@ -95,6 +95,8 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
         for k, v in overrides.items():
             cmd.append(f"{k}={v}")
 
+    if args.debug:
+        print(cmd)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
     values = dict(zip(query_vars, lines)) if proc.returncode == 0 else {}
@@ -244,6 +246,11 @@ if __name__ == "__main__":
         default=None,
         help="Path to the ports tree root, used only to find Mk/bsd.default-versions.mk for the default var list. "
              "Defaults to two levels up from port_dir (the standard <repo>/category/port layout).",
+    )
+    parser.add_argument(
+        "--debug",
+        action='store_true',
+        help="Prints additional information.",
     )
     args = parser.parse_args()
 
