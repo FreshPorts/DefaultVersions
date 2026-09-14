@@ -63,6 +63,14 @@ DEFAULT_PROBE_VALUE = "999999.9999"
 # real values is the primary fix and this is the last-resort path for
 # variables with no "Possible values:" comment to draw from at all.
 
+# Module-level debug flag. When run as a script, __main__ below sets
+# this from --debug. When imported (e.g. by populate_port_default_version_deps.py),
+# it defaults to False -- callers that want debug output from a bulk
+# run can opt in explicitly with:
+#     import port_default_version_deps
+#     port_default_version_deps.DEBUG = True
+DEBUG = False
+
 
 @dataclass
 class DependencyResult:
@@ -95,7 +103,7 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
         for k, v in overrides.items():
             cmd.append(f"{k}={v}")
 
-    if args.debug:
+    if DEBUG:
         print(cmd)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
@@ -253,6 +261,8 @@ if __name__ == "__main__":
         help="Prints additional information.",
     )
     args = parser.parse_args()
+
+    DEBUG = args.debug
 
     repo_root = args.repo or str(Path(args.port_dir).resolve().parent.parent)
 
