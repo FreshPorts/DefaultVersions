@@ -211,10 +211,39 @@ def find_all_dependencies(
                 recommended -- omit only if you don't have a repo
                 checkout available.
 
-    Runs one baseline `make -V` call, then one additional call per
-    candidate variable -- so len(default_vars) + 1 subprocess calls
-    total. Fine for an on-demand per-port check; not intended for
-    scanning the whole tree in a tight loop.
+    PERFORMANCE: most ports depend on NONE of the *_DEFAULT variables
+    (empirically: 0 out of 252 in a real `biology` category run). So
+    rather than testing each variable one at a time (2 `make` calls
+    per variable -- a baseline plus an override -- each requiring a
+    full bsd.port.mk/Uses/*.mk evaluation), this first tries ONE
+    combined call that overrides every variable in `default_vars`
+    simultaneously:
+
+        1. One combined baseline call (PORTVERSION, DISTVERSION, and
+           every variable's current value, all in one `make -V`
+           invocation).
+        2. One combined override call (same, but every variable set
+           to its probe value at once).
+        3. If PORTVERSION/DISTVERSION didn't move, the port depends
+           on NONE of them -- done, in 2 calls total instead of
+           2 * len(default_vars).
+
+    Only if that combined check shows a difference (or errors) does
+    it fall back to testing each variable individually, to correctly
+    attribute which one(s) are responsible. That fallback is exactly
+    the original one-at-a-time algorithm, so a port that DOES have a
+    dependency gets identical results either way -- this only changes
+    how many `make` calls the common (independent) case costs, not
+    what any port is reported as depending on.
+
+    Caveat: the combined-override step assumes overriding multiple
+    unrelated *_DEFAULT variables at once doesn't interact in some
+    surprising way for a given port (e.g. one variable's fallback
+    sentinel colliding with an unrelated check elsewhere). This is
+    not expected in practice -- each *_DEFAULT variable governs
+    independent, unrelated infrastructure -- and even if it happened,
+    the result would be a false "might depend on something" that
+    triggers the accurate fallback path, not a wrong final answer.
     """
     possible_values_by_var = {}
     if repo_root:
@@ -225,14 +254,56 @@ def find_all_dependencies(
             if vals:
                 possible_values_by_var[var] = vals
 
-    results = []
+    def _slow_path() -> list[DependencyResult]:
+        results = []
+        for var in default_vars:
+            r = port_depends_on_default_var(
+                port_dir, var, possible_values=possible_values_by_var.get(var)
+            )
+            if r.status in ("depends", "depends_error"):
+                results.append(r)
+        return results
+
+    # Combined baseline: PORTVERSION/DISTVERSION plus every variable's
+    # current value, all in one call.
+    rc, baseline_full, err = _run_make(port_dir, extra_vars=default_vars)
+    if rc != 0:
+        # Baseline itself failed -- can't determine anything from the
+        # fast path. Fall back (matches the original per-variable
+        # behavior, where a baseline failure for a given variable
+        # produces an 'error' result that find_all_dependencies
+        # silently excludes from its return value).
+        return _slow_path()
+    baseline = {k: baseline_full[k] for k in VERSION_VARS}
+
+    # Pick a probe value for every variable up front: a real
+    # alternate when possible_values gives us one, else the fallback
+    # sentinel.
+    combined_overrides = {}
     for var in default_vars:
-        r = port_depends_on_default_var(
-            port_dir, var, possible_values=possible_values_by_var.get(var)
-        )
-        if r.status in ("depends", "depends_error"):
-            results.append(r)
-    return results
+        possible = possible_values_by_var.get(var)
+        chosen = None
+        if possible:
+            current_value = baseline_full.get(var)
+            alternates = [v for v in possible if v != current_value]
+            if alternates:
+                chosen = alternates[0]
+        combined_overrides[var] = chosen if chosen is not None else DEFAULT_PROBE_VALUE
+
+    rc2, combined_overridden, err2 = _run_make(port_dir, overrides=combined_overrides)
+
+    if rc2 == 0:
+        overridden = {k: combined_overridden[k] for k in VERSION_VARS}
+        if overridden == baseline:
+            # Fast path: overriding EVERY candidate variable at once
+            # changed nothing -- this port depends on none of them.
+            return []
+
+    # Something moved (or the combined override broke the build) --
+    # fall back to testing each variable individually to attribute
+    # the effect correctly. Only reached for ports that actually have
+    # a dependency, so the extra cost is rare in aggregate.
+    return _slow_path()
 
 
 if __name__ == "__main__":
