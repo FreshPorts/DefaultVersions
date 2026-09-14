@@ -38,6 +38,7 @@ import argparse
 import configparser
 import re
 import sys
+import traceback
 from pathlib import Path
 
 from port_default_version_deps import find_all_dependencies
@@ -135,6 +136,7 @@ def main() -> int:
                 deps = find_all_dependencies(port_dir, varnames, repo_root=args.repo)
             except Exception as exc:
                 print(f"error: make -V check failed for {port_dir}: {exc}", file=sys.stderr)
+                print(traceback.format_exc(), file=sys.stderr)
                 error_count += 1
                 continue
 
