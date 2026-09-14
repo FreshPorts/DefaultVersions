@@ -108,6 +108,8 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
     values = dict(zip(query_vars, lines)) if proc.returncode == 0 else {}
+    if DEBUG:
+        print(f"  -> rc={proc.returncode} values={values} stderr={proc.stderr.strip()!r}")
     return proc.returncode, values, proc.stderr.strip()
 
 

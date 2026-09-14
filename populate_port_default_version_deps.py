@@ -42,6 +42,7 @@ import traceback
 from pathlib import Path
 
 from port_default_version_deps import find_all_dependencies
+import port_default_version_deps
 from sync_default_version_variable import parse_default_versions_file, read_target_file
 from sync_port_default_version_variable import sync_port_dependencies
 
@@ -83,7 +84,10 @@ def main() -> int:
     parser.add_argument("--category", default=None, help="Only process ports in this category (e.g. lang) -- useful for testing")
     parser.add_argument("--port", default=None, help="Only process a single port, given as category/name (e.g. net-p2p/litecoin) -- overrides --category")
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N ports -- useful for testing")
+    parser.add_argument("--debug", action="store_true", help="Print every make command run and its result (rc/values/stderr)")
     args = parser.parse_args()
+
+    port_default_version_deps.DEBUG = args.debug
 
     port_category, port_name = None, None
     if args.port:
