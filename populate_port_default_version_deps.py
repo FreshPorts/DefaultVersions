@@ -29,8 +29,9 @@ directory is assumed to be <repo>/<category>/<name>.
 Usage:
     python3 populate_port_default_version_deps.py --repo /jails/freshports/usr/ports [--dry-run]
 
-Requires psycopg2; connects using the same config.ini-derived DSN as
-sync_default_version_variable.py, unless --dsn is given.
+Requires psycopg2; connects with the same config.ini-derived parameters
+as sync_default_version_variable.py, unless --dsn is given. Connections
+require TLS -- see connection_params_from_config() there.
 """
 
 from __future__ import annotations
@@ -43,7 +44,12 @@ from pathlib import Path
 
 from port_default_version_deps import check_port_dependencies
 import port_default_version_deps
-from sync_default_version_variable import parse_default_versions_file, read_target_file
+from sync_default_version_variable import (
+    connection_params_from_config,
+    parse_default_versions_file,
+    read_target_file,
+    require_ssl,
+)
 from sync_port_default_version_variable import get_variable_ids, sync_port_dependencies
 
 PROGRESS_EVERY = 500
@@ -83,7 +89,7 @@ def get_active_ports(conn, category: str = None, name: str = None) -> list[dict]
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True, help="Path to local ports tree checkout")
-    parser.add_argument("--dsn", default=None, help="Postgres DSN (default: derived from config.ini, same as sync_default_version_variable.py)")
+    parser.add_argument("--dsn", default=None, help="Postgres DSN (default: derived from config.ini, same as sync_default_version_variable.py). sslmode=require is added unless the DSN sets one")
     parser.add_argument("--dry-run", action="store_true", help="Run the make -V checks but don't write to the DB")
     parser.add_argument("--category", default=None, help="Only process ports in this category (e.g. lang) -- useful for testing")
     parser.add_argument("--port", default=None, help="Only process a single port, given as category/name (e.g. net-p2p/litecoin) -- overrides --category")
@@ -107,24 +113,11 @@ def main() -> int:
     import psycopg2  # imported lazily, same convention as sync_default_version_variable.py
 
     if args.dsn:
-        conn = psycopg2.connect(args.dsn)
+        conn = psycopg2.connect(require_ssl(args.dsn))
     else:
         config = configparser.ConfigParser()
         config.read('/usr/local/etc/freshports/config.ini')
-        # Pass the parameters as keywords and let psycopg2 quote each
-        # one for libpq. Hand-assembling the DSN string and running the
-        # password through re.escape() only looked like escaping:
-        # re.escape is a REGEX escaper and leaves libpq's own
-        # metacharacter -- a leading single quote -- untouched, so a
-        # password starting with ' failed the connection with
-        # "unterminated quoted string in connection info string".
-        conn = psycopg2.connect(
-            host=config['database']['HOST'],
-            dbname=config['database']['DBNAME'],
-            user=config['database']['DEFAULTS_DBUSER'],
-            password=config['database']['DEFAULTS_PASSWORD'],
-            sslcertmode='disable',
-        )
+        conn = psycopg2.connect(**connection_params_from_config(config))
 
     try:
         ports = get_active_ports(conn, category=port_category or args.category, name=port_name)
