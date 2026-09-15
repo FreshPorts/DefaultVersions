@@ -41,6 +41,7 @@ tree before relying on it.
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
@@ -104,7 +105,7 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
             cmd.append(f"{k}={v}")
 
     if DEBUG:
-        print(cmd)
+        print(shlex.join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
     values = dict(zip(query_vars, lines)) if proc.returncode == 0 else {}
