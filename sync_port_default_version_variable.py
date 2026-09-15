@@ -46,20 +46,46 @@ def sync_port_dependencies(
     port_id: int,
     checked_vars: list[str],
     results: list[DependencyResult],
+    var_id_by_name: dict[str, int] | None = None,
+    commit: bool = True,
 ) -> dict:
     """
-    port_id       - the port's id in the ports table
-    checked_vars  - the FULL list of *_DEFAULT variable names that were
-                    checked this run (not just the ones found dependent
-                    -- this is what lets us tell "checked and now
-                    independent" apart from "not checked this run,
-                    leave alone")
-    results       - find_all_dependencies()'s return value: only the
-                    'depends'/'depends_error' entries
+    port_id        - the port's id in the ports table
+    checked_vars   - the list of *_DEFAULT variable names that were
+                     CONCLUSIVELY checked this run (not just the ones
+                     found dependent -- this is what lets us tell
+                     "checked and now independent" apart from "not
+                     checked this run, leave alone"). Pass
+                     PortCheckOutcome.checked_vars: a variable whose
+                     check errored out must NOT be listed here, or its
+                     row gets deleted on the strength of a failed
+                     check. An empty list is a no-op, by the same
+                     logic.
+    results        - check_port_dependencies()'s results: only the
+                     'depends'/'depends_error' entries
+    var_id_by_name - optional pre-fetched name -> id map for the
+                     default_version_variable catalog. The catalog is
+                     fixed for the duration of a bulk run, so callers
+                     looping over many ports should look it up once
+                     with get_variable_ids() and pass it in rather
+                     than re-querying it per port.
+    commit         - commit before returning. Set False in a bulk run
+                     and commit in batches; one commit per port is one
+                     fsync per port.
 
     Returns {'upserted': [...names...], 'removed': [...names...], 'skipped_unknown_variable': [...names...]}
     """
-    var_id_by_name = get_variable_ids(conn, checked_vars)
+    if not checked_vars:
+        # Nothing was conclusively checked for this port -- e.g. every
+        # `make -V` call failed because the directory is missing from
+        # the tree. There is nothing to reconcile, and in particular
+        # nothing to DELETE: removing rows here would turn a failed
+        # check into "this port depends on nothing" and silently throw
+        # away correct data.
+        return {"upserted": [], "removed": [], "skipped_unknown_variable": []}
+
+    if var_id_by_name is None:
+        var_id_by_name = get_variable_ids(conn, checked_vars)
     skipped_unknown = [v for v in checked_vars if v not in var_id_by_name]
 
     result_by_var = {r.default_var: r for r in results}
@@ -124,5 +150,6 @@ def sync_port_dependencies(
         )
         upserted.append(varname)
 
-    conn.commit()
+    if commit:
+        conn.commit()
     return {"upserted": upserted, "removed": removed, "skipped_unknown_variable": skipped_unknown}
