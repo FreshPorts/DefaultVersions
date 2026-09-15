@@ -28,6 +28,8 @@ directory is assumed to be <repo>/<category>/<name>.
 
 Usage:
     python3 populate_port_default_version_deps.py --repo /jails/freshports/usr/ports [--dry-run]
+    python3 populate_port_default_version_deps.py --repo /jails/freshports/usr/ports --category lang
+    python3 populate_port_default_version_deps.py --repo /jails/freshports/usr/ports --port lang/python,net-p2p/litecoin
 
 Requires psycopg2; connects with the same config.ini-derived parameters
 as sync_default_version_variable.py, unless --dsn is given. Connections
@@ -59,24 +61,30 @@ PROGRESS_EVERY = 500
 COMMIT_EVERY = 500
 
 
-def get_active_ports(conn, category: str = None, name: str = None) -> list[dict]:
+def get_active_ports(conn, category: str = None, ports: list[tuple] = None) -> list[dict]:
     """
     Returns [{'id': ..., 'name': ..., 'category': ...}, ...] from
-    ports_active, optionally filtered down to a single category and/or
-    port name at the SQL level (rather than pulling the whole table and
-    filtering in Python -- ports_active can be tens of thousands of rows).
+    ports_active, optionally narrowed at the SQL level (rather than
+    pulling the whole table and filtering in Python -- ports_active can
+    be tens of thousands of rows).
+
+    ports    - [(category, name), ...]: fetch exactly these ports, in
+               one round trip. Matched as a row value, so
+               lang/python and net-p2p/python stay distinct -- which
+               separate "category IN (...) AND name IN (...)" lists
+               would not.
+    category - a whole category, used only when `ports` isn't given.
     """
     sql = "SELECT id, name, category FROM ports_active"
-    conditions = []
     params = []
-    if category:
-        conditions.append("category = %s")
+    if ports:
+        placeholders = ", ".join(["(%s, %s)"] * len(ports))
+        sql += f" WHERE (category, name) IN ({placeholders})"
+        for port_category, port_name in ports:
+            params.extend((port_category, port_name))
+    elif category:
+        sql += " WHERE category = %s"
         params.append(category)
-    if name:
-        conditions.append("name = %s")
-        params.append(name)
-    if conditions:
-        sql += " WHERE " + " AND ".join(conditions)
 
     cur = conn.cursor()
     cur.execute(sql, params)
@@ -92,19 +100,36 @@ def main() -> int:
     parser.add_argument("--dsn", default=None, help="Postgres DSN (default: derived from config.ini, same as sync_default_version_variable.py). sslmode=require is added unless the DSN sets one")
     parser.add_argument("--dry-run", action="store_true", help="Run the make -V checks but don't write to the DB")
     parser.add_argument("--category", default=None, help="Only process ports in this category (e.g. lang) -- useful for testing")
-    parser.add_argument("--port", default=None, help="Only process a single port, given as category/name (e.g. net-p2p/litecoin) -- overrides --category")
+    parser.add_argument(
+        "--port",
+        default=None,
+        help="Only process these ports: a comma-separated list of category/name "
+             "(e.g. lang/python,net-p2p/litecoin) -- overrides --category",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N ports -- useful for testing")
     parser.add_argument("--debug", action="store_true", help="Print every make command run and its result (rc/values/stderr)")
     args = parser.parse_args()
 
     port_default_version_deps.DEBUG = args.debug
 
-    port_category, port_name = None, None
+    requested_ports = []
     if args.port:
-        if "/" not in args.port:
-            print(f"--port must be given as category/name (e.g. net-p2p/litecoin), got: {args.port}", file=sys.stderr)
+        for entry in args.port.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue  # tolerate a trailing or doubled comma
+            if "/" not in entry:
+                print(
+                    f"--port entries must be given as category/name "
+                    f"(e.g. net-p2p/litecoin), got: {entry}",
+                    file=sys.stderr,
+                )
+                return 1
+            port_category, _, port_name = entry.partition("/")
+            requested_ports.append((port_category, port_name))
+        if not requested_ports:
+            print("--port was given but lists no ports", file=sys.stderr)
             return 1
-        port_category, port_name = args.port.split("/", 1)
 
     mk_text = read_target_file(args.repo)
     varnames = [v.name for v in parse_default_versions_file(mk_text) if v.active]
@@ -120,13 +145,23 @@ def main() -> int:
         conn = psycopg2.connect(**connection_params_from_config(config))
 
     try:
-        ports = get_active_ports(conn, category=port_category or args.category, name=port_name)
+        ports = get_active_ports(conn, category=args.category, ports=requested_ports)
         if args.limit is not None:
             ports = ports[: args.limit]
 
         print(f"found {len(ports)} active ports to check")
-        if args.port and not ports:
-            print(f"warning: no active port found matching {args.port} -- check spelling/category", file=sys.stderr)
+        if requested_ports:
+            # Name the ones that didn't come back, rather than only
+            # noticing when NONE of them did -- asking for five and
+            # silently checking three is the easy mistake here.
+            found = {(p["category"], p["name"]) for p in ports}
+            missing = [f"{c}/{n}" for c, n in requested_ports if (c, n) not in found]
+            if missing:
+                print(
+                    f"warning: {len(missing)} requested port(s) not found in ports_active "
+                    f"-- check spelling/category: {', '.join(missing)}",
+                    file=sys.stderr,
+                )
 
         # The variable catalog can't change while this runs, so look it
         # up once instead of once per port -- otherwise it's one
