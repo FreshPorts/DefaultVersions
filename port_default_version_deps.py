@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 VERSION_VARS = ("PORTVERSION", "DISTVERSION")
@@ -71,6 +71,15 @@ DEFAULT_PROBE_VALUE = "999999.9999"
 #     import port_default_version_deps
 #     port_default_version_deps.DEBUG = True
 DEBUG = False
+
+
+class MakeError(RuntimeError):
+    """The port's own `make -V` failed -- nothing can be determined about it."""
+
+
+class MakeOutputError(RuntimeError):
+    """`make -V` exited 0 but its output can't be mapped back to the
+    variables that were queried (see _run_make)."""
 
 
 @dataclass
@@ -108,6 +117,18 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
         print(shlex.join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
+    if proc.returncode == 0 and len(lines) != len(query_vars):
+        # `make -V` prints exactly one line per -V, so a different count
+        # means the port's evaluation put something else on stdout (a
+        # bmake `.info`, a Mk/*.mk notice, ...). Zipping names to lines
+        # positionally would then silently shift every value by one --
+        # e.g. recording a deprecation notice as this port's PORTVERSION
+        # and reporting a bogus dependency off the back of it -- so
+        # refuse to map them at all rather than return plausible garbage.
+        raise MakeOutputError(
+            f"{shlex.join(cmd)}: {len(query_vars)} variable(s) queried but "
+            f"make printed {len(lines)} line(s): {lines!r}"
+        )
     values = dict(zip(query_vars, lines)) if proc.returncode == 0 else {}
     if DEBUG:
         print(f"  -> rc={proc.returncode} values={values} stderr={proc.stderr.strip()!r}")
@@ -212,6 +233,29 @@ def port_depends_on_default_var(
     return DependencyResult(status="independent", default_var=default_var, baseline=baseline)
 
 
+# Mk/bsd.default-versions.mk is stable for the duration of a run, but
+# find_all_dependencies() is called once per port -- tens of thousands of
+# times for a whole tree. Re-reading the file and re-scanning its full
+# text once per variable per port (38 scans x 30k ports) is pure
+# overhead, so the extraction is memoised per repo root. Clear this dict
+# (or restart) if the file is edited mid-run.
+_POSSIBLE_VALUES_CACHE: dict = {}
+
+
+def _possible_values(repo_root: str, default_vars: list[str]) -> dict:
+    """{var: [real documented values]} for vars that document any, read
+    from repo_root's Mk/bsd.default-versions.mk at most once per var."""
+    from sync_default_version_variable import extract_possible_values, read_target_file
+
+    cached = _POSSIBLE_VALUES_CACHE.setdefault(repo_root, {})
+    missing = [v for v in default_vars if v not in cached]
+    if missing:
+        mk_text = read_target_file(repo_root)
+        for var in missing:
+            cached[var] = extract_possible_values(mk_text, var)
+    return {v: cached[v] for v in default_vars if cached.get(v)}
+
+
 def find_all_dependencies(
     port_dir: str,
     default_vars: list[str],
@@ -221,6 +265,11 @@ def find_all_dependencies(
     Check a port against a list of *_DEFAULT variable names (e.g. from
     a live parse of Mk/bsd.default-versions.mk) and return only the
     ones it actually depends on ('depends' or 'depends_error').
+
+    Raises MakeError if the port's own baseline `make -V` fails, and
+    MakeOutputError if make's output can't be mapped to the variables
+    queried -- in both cases the port is unevaluable, which is NOT the
+    same as "depends on nothing" and must not be reported as such.
 
     repo_root - if given, Mk/bsd.default-versions.mk is read once and
                 used to look up real possible_values for each
@@ -263,14 +312,7 @@ def find_all_dependencies(
     the result would be a false "might depend on something" that
     triggers the accurate fallback path, not a wrong final answer.
     """
-    possible_values_by_var = {}
-    if repo_root:
-        from sync_default_version_variable import extract_possible_values, read_target_file
-        mk_text = read_target_file(repo_root)
-        for var in default_vars:
-            vals = extract_possible_values(mk_text, var)
-            if vals:
-                possible_values_by_var[var] = vals
+    possible_values_by_var = _possible_values(repo_root, default_vars) if repo_root else {}
 
     def _slow_path() -> list[DependencyResult]:
         results = []
@@ -286,12 +328,18 @@ def find_all_dependencies(
     # current value, all in one call.
     rc, baseline_full, err = _run_make(port_dir, extra_vars=default_vars)
     if rc != 0:
-        # Baseline itself failed -- can't determine anything from the
-        # fast path. Fall back (matches the original per-variable
-        # behavior, where a baseline failure for a given variable
-        # produces an 'error' result that find_all_dependencies
-        # silently excludes from its return value).
-        return _slow_path()
+        # The port's own unmodified `make -V` failed, so nothing at all
+        # can be concluded about it -- least of all "independent".
+        # Returning [] here (which is what falling back to the slow path
+        # amounted to: every per-variable baseline runs the very same
+        # command, fails the same way, and yields an 'error' result that
+        # gets filtered out) is actively harmful, because callers read an
+        # empty result as "checked, depends on nothing" and DELETE the
+        # port's existing rows -- see sync_port_dependencies(). A broken
+        # port, an unreadable tree or a transient failure would silently
+        # wipe known-good data. Fail loudly instead; bulk callers already
+        # catch this per port, count it, and leave the DB untouched.
+        raise MakeError(f"baseline `make -V` failed for {port_dir} (exit {rc}): {err}")
     baseline = {k: baseline_full[k] for k in VERSION_VARS}
 
     # Pick a probe value for every variable up front: a real
@@ -372,7 +420,12 @@ if __name__ == "__main__":
             if v.active
         ]
 
-    deps = find_all_dependencies(args.port_dir, varnames, repo_root=repo_root)
+    try:
+        deps = find_all_dependencies(args.port_dir, varnames, repo_root=repo_root)
+    except (MakeError, MakeOutputError) as exc:
+        print(f"{args.port_dir}: {exc}", file=sys.stderr)
+        sys.exit(2)
+
     if not deps:
         print(f"{args.port_dir}: no dependency on any checked *_DEFAULT variable")
         sys.exit(0)
