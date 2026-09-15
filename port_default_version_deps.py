@@ -42,6 +42,7 @@ tree before relying on it.
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from typing import Optional
@@ -107,7 +108,7 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
             cmd.append(f"{k}={v}")
 
     if DEBUG:
-        print(cmd)
+        print(shlex.join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
     err = proc.stderr.strip()
@@ -199,6 +200,21 @@ def port_depends_on_default_var(
         if alternates:
             chosen_probe = alternates[0]
             used_real_alternate = True
+        else:
+            # possible_values is the FULL documented domain for this
+            # variable, and it contains no value different from the
+            # current one (e.g. PYTHON2_DEFAULT's only documented
+            # value is 2.7 -- Python 2 is frozen, there's nothing
+            # else to compare against). This variable genuinely
+            # cannot be differential-tested: falling back to a fake
+            # sentinel here wouldn't test whether THIS port depends
+            # on it, it would just trip whatever validation the
+            # owning Uses/*.mk file does on the variable globally,
+            # for any port that happens to touch that infrastructure
+            # at all. Treat as untestable rather than report a
+            # depends_error that doesn't actually mean what it looks
+            # like it means.
+            return DependencyResult(status="independent", default_var=default_var, baseline=baseline)
     if chosen_probe is None:
         chosen_probe = probe_value
 
@@ -361,27 +377,40 @@ def check_port_dependencies(
     baseline = {k: baseline_full[k] for k in VERSION_VARS}
 
     # Pick a probe value for every variable up front: a real
-    # alternate when possible_values gives us one, else the fallback
-    # sentinel.
+    # alternate when possible_values gives us one, the fallback
+    # sentinel when we don't know the domain at all (e.g. SSL_DEFAULT).
+    # Variables where possible_values is known but has NO usable
+    # alternate (e.g. PYTHON2_DEFAULT's only documented value is 2.7)
+    # are OMITTED from the combined override entirely -- including
+    # them with a known-invalid sentinel risks tripping that
+    # variable's own validation for every port that touches its
+    # infrastructure, poisoning the combined test and forcing an
+    # unnecessary fallback to the slow path for ports that don't
+    # actually depend on the untestable variable at all.
     combined_overrides = {}
     for var in default_vars:
         possible = possible_values_by_var.get(var)
-        chosen = None
         if possible:
             current_value = baseline_full.get(var)
             alternates = [v for v in possible if v != current_value]
             if alternates:
-                chosen = alternates[0]
-        combined_overrides[var] = chosen if chosen is not None else DEFAULT_PROBE_VALUE
+                combined_overrides[var] = alternates[0]
+            # else: no usable alternate -- omit, untestable
+        else:
+            combined_overrides[var] = DEFAULT_PROBE_VALUE
 
     rc2, combined_overridden, err2 = _run_make(port_dir, overrides=combined_overrides)
 
     if rc2 == 0:
         overridden = {k: combined_overridden[k] for k in VERSION_VARS}
         if overridden == baseline:
-            # Fast path: overriding EVERY candidate variable at once
-            # changed nothing -- this port depends on none of them,
-            # and all of them count as conclusively checked.
+            # Fast path: overriding every TESTABLE candidate variable
+            # at once changed nothing -- this port depends on none of
+            # them. The untestable ones omitted from the override
+            # above are independent by definition (the slow path
+            # reports 'independent' for them too, without running
+            # anything), so every variable in default_vars counts as
+            # conclusively checked here.
             return PortCheckOutcome(checked_vars=list(default_vars))
 
     # Something moved (or the combined override broke the build) --
