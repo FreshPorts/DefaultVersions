@@ -252,6 +252,37 @@ def extract_possible_values(text: str, varname: str) -> list[str]:
 DEFAULT_SSLMODE = 'require'
 
 
+def _config_value(config, key: str) -> str:
+    """
+    One [database] value from config.ini, with surrounding quotes
+    removed.
+
+    Values in that file are written both ways -- HOST bare,
+    DEFAULTS_DBUSER as 'defaulter_dvl' -- because the file is shared
+    with consumers that want the quotes. configparser does NOT treat
+    them as syntax: it hands back the quote characters as part of the
+    value.
+
+    The old hand-assembled DSN got away with that by accident. libpq
+    strips a value's surrounding single quotes when it parses a
+    connection STRING, so "user=" + "'defaulter_dvl'" arrived at the
+    server as defaulter_dvl. Passing keyword arguments to
+    psycopg2.connect() quotes each value correctly instead, which
+    means anything left in the value is part of the value -- and the
+    server answers with
+
+        no pg_hba.conf entry for host "...", user "'defaulter_dvl'",
+        database "'freshports.dvl'", SSL encryption
+
+    So strip them here, deliberately, rather than relying on a parser
+    downstream to do it.
+    """
+    value = config['database'][key].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return value
+
+
 def connection_params_from_config(config) -> dict:
     """
     libpq connection parameters from a freshports config.ini.
@@ -265,12 +296,14 @@ def connection_params_from_config(config) -> dict:
 
     sslcertmode='disable' is unrelated to sslmode: it says we never send
     a CLIENT certificate, which is still true.
+
+    Values are unquoted on the way out -- see _config_value().
     """
     return {
-        'host': config['database']['HOST'],
-        'dbname': config['database']['DBNAME'],
-        'user': config['database']['DEFAULTS_DBUSER'],
-        'password': config['database']['DEFAULTS_PASSWORD'],
+        'host': _config_value(config, 'HOST'),
+        'dbname': _config_value(config, 'DBNAME'),
+        'user': _config_value(config, 'DEFAULTS_DBUSER'),
+        'password': _config_value(config, 'DEFAULTS_PASSWORD'),
         'sslmode': DEFAULT_SSLMODE,
         'sslcertmode': 'disable',
     }
