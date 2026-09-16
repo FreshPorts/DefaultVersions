@@ -36,9 +36,9 @@ not a hand-maintained guess):
 Usage:
     python3 sync_default_version_variable.py --repo /usr/ports [--dry-run]
 
-Requires psycopg2 for actual DB execution; connects using standard
-libpq environment variables (PGHOST, PGDATABASE, PGUSER, PGPASSWORD,
-PGPORT) unless --dsn is given.
+Requires psycopg2 for actual DB execution; connection parameters come
+from /usr/local/etc/freshports/config.ini unless --dsn is given.
+Connections require TLS -- see connection_params_from_config().
 """
 
 from __future__ import annotations
@@ -236,6 +236,95 @@ def extract_possible_values(text: str, varname: str) -> list[str]:
     return []
 
 
+# Connections to the database must be encrypted. libpq's own default
+# sslmode is 'prefer', which negotiates TLS when the server offers it
+# and silently continues in PLAINTEXT when it doesn't -- so a server
+# that stops offering TLS, or a connection redirected somewhere else,
+# downgrades without anything being logged or raised. Pinning 'require'
+# makes that a connection failure instead.
+#
+# Note what 'require' does not do: it encrypts, but it does not
+# authenticate the server, so it doesn't stop an attacker who can
+# redirect the connection from presenting their own certificate. If the
+# server's CA certificate is available to these scripts, 'verify-full'
+# (plus sslrootcert=/path/to/ca.crt) is the setting that actually rules
+# out a man in the middle.
+DEFAULT_SSLMODE = 'require'
+
+
+def _config_value(config, key: str) -> str:
+    """
+    One [database] value from config.ini, with surrounding quotes
+    removed.
+
+    Values in that file are written both ways -- HOST bare,
+    DEFAULTS_DBUSER as 'defaulter_dvl' -- because the file is shared
+    with consumers that want the quotes. configparser does NOT treat
+    them as syntax: it hands back the quote characters as part of the
+    value.
+
+    The old hand-assembled DSN got away with that by accident. libpq
+    strips a value's surrounding single quotes when it parses a
+    connection STRING, so "user=" + "'defaulter_dvl'" arrived at the
+    server as defaulter_dvl. Passing keyword arguments to
+    psycopg2.connect() quotes each value correctly instead, which
+    means anything left in the value is part of the value -- and the
+    server answers with
+
+        no pg_hba.conf entry for host "...", user "'defaulter_dvl'",
+        database "'freshports.dvl'", SSL encryption
+
+    So strip them here, deliberately, rather than relying on a parser
+    downstream to do it.
+    """
+    value = config['database'][key].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return value
+
+
+def connection_params_from_config(config) -> dict:
+    """
+    libpq connection parameters from a freshports config.ini.
+
+    Returned as keyword arguments for psycopg2.connect(**params) rather
+    than as a DSN string, so psycopg2 quotes each value for libpq. In
+    particular the password: it can't be safely pasted into a
+    hand-assembled DSN, and re.escape() is not the escaper for the job
+    -- that's a REGEX escaper, and it leaves libpq's own metacharacter,
+    a leading single quote, untouched.
+
+    sslcertmode='disable' is unrelated to sslmode: it says we never send
+    a CLIENT certificate, which is still true.
+
+    Values are unquoted on the way out -- see _config_value().
+    """
+    return {
+        'host': _config_value(config, 'HOST'),
+        'dbname': _config_value(config, 'DBNAME'),
+        'user': _config_value(config, 'DEFAULTS_DBUSER'),
+        'password': _config_value(config, 'DEFAULTS_PASSWORD'),
+        'sslmode': DEFAULT_SSLMODE,
+        'sslcertmode': 'disable',
+    }
+
+
+def require_ssl(dsn: str) -> str:
+    """
+    Add sslmode to a caller-supplied --dsn that doesn't set one, so an
+    operator-supplied DSN can't quietly connect in the clear either.
+
+    A DSN that DOES name an sslmode is left alone -- 'verify-full' is
+    stronger than what we'd impose, and a deliberate 'disable' (a local
+    test instance, say) is the operator's call to make explicitly.
+    """
+    from psycopg2.extensions import make_dsn, parse_dsn
+
+    params = parse_dsn(dsn)
+    params.setdefault('sslmode', DEFAULT_SSLMODE)
+    return make_dsn(**params)
+
+
 def read_target_file(repo: str) -> str:
     path = Path(repo) / TARGET_RELATIVE_PATH
     return path.read_text()
@@ -377,10 +466,10 @@ def main() -> int:
 
     SCRIPT_DIR = config['filesystem']['SCRIPT_DIR']
 
-    DSN = 'host=' + config['database']['HOST'] + ' dbname=' + config['database']['DBNAME'] + ' user=' + config['database']['DEFAULTS_DBUSER'] + ' password=' + re.escape(config['database']['DEFAULTS_PASSWORD']) + ' sslcertmode=disable'
+    conn_params = connection_params_from_config(config)
 
     if args.check:
-        conn = psycopg2.connect(args.dsn) if args.dsn else psycopg2.connect(DSN)
+        conn = psycopg2.connect(require_ssl(args.dsn)) if args.dsn else psycopg2.connect(**conn_params)
         try:
             plan = compute_sync_plan(conn, records)
         finally:
@@ -406,7 +495,7 @@ def main() -> int:
 
         return 1 if drift else 0
 
-    conn = psycopg2.connect(args.dsn) if args.dsn else psycopg2.connect(DSN)
+    conn = psycopg2.connect(require_ssl(args.dsn)) if args.dsn else psycopg2.connect(**conn_params)
     try:
         summary = sync_table(conn, records, hard_delete=args.hard_delete)
     finally:

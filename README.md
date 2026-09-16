@@ -213,10 +213,20 @@ it with the assignment).
   — `status` is `depends` (value flowed through), `depends_error` (override
   broke the build — still evidence of a dependency, just not of the resulting
   value), `independent`, or `error` (baseline call itself failed).
-- `find_all_dependencies(port_dir, default_vars, repo_root=...) -> list[DependencyResult]`
+- `check_port_dependencies(port_dir, default_vars, repo_root=...) -> PortCheckOutcome`
   — checks a port against a list of variables, auto-loading `possible_values`
-  for each from `repo_root` when given. Returns only `depends`/`depends_error`
-  entries.
+  for each from `repo_root` when given. Returns `.results` (the
+  `depends`/`depends_error` entries), `.checked_vars` (the variables make
+  actually answered for), `.errors` (per-variable failures) and
+  `.baseline_error` (set when the port couldn't be evaluated at all — a missing
+  directory, a broken Makefile — in which case nothing was checked).
+- `find_all_dependencies(port_dir, default_vars, repo_root=...) -> list[DependencyResult]`
+  — convenience wrapper returning just `check_port_dependencies().results`.
+  **Anything that writes to the database must use `check_port_dependencies()`
+  instead:** the bare list collapses "checked, depends on nothing" and "could
+  not be checked at all" into the same empty result, and feeding that to
+  `sync_port_dependencies()` deletes a port's existing rows on the strength of
+  a failed check.
 
 CLI:
 ```
@@ -238,7 +248,7 @@ table.
 
 - `get_variable_ids(conn, names) -> dict[str, int]` — looks up
   `default_version_variable.id` for a list of names.
-- `sync_port_dependencies(conn, port_id, checked_vars, results) -> dict` —
+- `sync_port_dependencies(conn, port_id, checked_vars, results, var_id_by_name=None, commit=True) -> dict` —
   upserts rows for variables now found dependent, and **removes** rows for
   variables that were dependent on a previous run but aren't anymore among the
   ones actually rechecked this run. (Real `DELETE`, not soft — this table is
@@ -248,7 +258,15 @@ table.
 checked this run, not just the ones that came back dependent — that's what lets
 the function distinguish "checked, now independent" (row removed) from "not
 checked this run" (row left alone). Passing a partial list risks deleting real
-dependencies for variables that were never re-evaluated.
+dependencies for variables that were never re-evaluated. Pass
+`PortCheckOutcome.checked_vars`, which excludes anything that errored; an empty
+list is a no-op, so a port that couldn't be evaluated keeps its rows.
+
+`var_id_by_name` and `commit` exist for bulk runs: the
+`default_version_variable` catalog doesn't change while a run is in progress,
+so look it up once with `get_variable_ids()` and pass it in rather than
+re-querying it for every port, and pass `commit=False` so the caller can commit
+in batches instead of paying one fsync per port.
 
 Validated end-to-end (real dependency-check results from the fake `make`,
 persisted into and reconciled against a SQLite-simulated schema), including the

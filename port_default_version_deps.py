@@ -11,7 +11,7 @@ $ python3 ./port_default_version_deps.py /jails/freshports/usr/ports/lang/python
   overridden: {'PORTVERSION': '3.10', 'DISTVERSION': '3.10'}
 
 $ python3 ./port_default_version_deps.py /jails/freshports/usr/ports/net-mgmt/librenms
-/jails/freshports/usr/ports/net-mgmt/librenms: no dependency on any checked *_DEFAULT variable
+/jails/freshports/usr/ports/net-mgmt/librenms: no dependency on any of the 38 *_DEFAULT variable(s) checked
 $
 
 Determines whether a given port's PORTVERSION/DISTVERSION depends on
@@ -41,6 +41,7 @@ tree before relying on it.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -102,8 +103,10 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
     alternate probe value -- see port_depends_on_default_var).
 
     Returns (returncode, {varname: value}, stderr_text). On non-zero
-    exit, the values dict may be incomplete/empty -- callers check
-    returncode before trusting it.
+    exit the values dict is empty -- callers check returncode before
+    trusting it. A run that exits 0 but does not print exactly one
+    line per -V flag is reported as returncode 1 as well, since the
+    name->value pairing cannot be trusted in that case.
     """
     query_vars = list(VERSION_VARS) + list(extra_vars or [])
     cmd = ["make", "-C", port_dir]
@@ -117,6 +120,7 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
         print(shlex.join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     lines = proc.stdout.splitlines()
+<<<<<<< HEAD
     if proc.returncode == 0 and len(lines) != len(query_vars):
         # `make -V` prints exactly one line per -V, so a different count
         # means the port's evaluation put something else on stdout (a
@@ -129,10 +133,49 @@ def _run_make(port_dir: str, overrides: Optional[dict] = None, extra_vars: Optio
             f"{shlex.join(cmd)}: {len(query_vars)} variable(s) queried but "
             f"make printed {len(lines)} line(s): {lines!r}"
         )
+=======
+    err = proc.stderr.strip()
+
+    if proc.returncode == 0 and len(lines) != len(query_vars):
+        # `make -V` prints exactly one line per -V flag, including an
+        # empty line for an empty or undefined variable. Anything else
+        # means the name->value pairing can't be trusted: zip() would
+        # silently mis-pair the values or drop the tail, and callers
+        # would then KeyError on PORTVERSION -- or, worse, compare a
+        # shifted value against the baseline and call it a difference.
+        # Report it as a failure. The usual cause is a `make` that
+        # isn't bmake, or a wrapper that adds output of its own.
+        err = "; ".join(x for x in (
+            err,
+            f"expected {len(query_vars)} line(s) of `make -V` output, got {len(lines)}",
+        ) if x)
+        if DEBUG:
+            print(f"  -> rc=0 but got {len(lines)} line(s) for {len(query_vars)} -V flag(s); treating as failure")
+        return 1, {}, err
+
+>>>>>>> c36729c6b46dd2dece2c7974e2b5fc8dfe6b1e8c
     values = dict(zip(query_vars, lines)) if proc.returncode == 0 else {}
     if DEBUG:
-        print(f"  -> rc={proc.returncode} values={values} stderr={proc.stderr.strip()!r}")
-    return proc.returncode, values, proc.stderr.strip()
+        print(f"  -> rc={proc.returncode} values={values} stderr={err!r}")
+    return proc.returncode, values, err
+
+
+def _probe_appears_in(version: str, probe: str) -> bool:
+    """
+    Did `probe` actually show up as a component of `version`?
+
+    Deliberately not a plain substring test. With a real alternate
+    value like PHP_DEFAULT's '8.1', `'8.1' in '18.15'` is true purely
+    by coincidence, and reports a probe value that never appeared.
+    Require the match to begin at a component boundary (not mid-digit,
+    not partway through a longer dotted run) and not to run on into a
+    longer identifier -- so '8.1' matches '8.1', '8.1.2' and
+    'py38-8.1', but not '18.15' or '1.8.1'.
+    """
+    return re.search(
+        rf"(?<![0-9A-Za-z.]){re.escape(probe)}(?![0-9A-Za-z])",
+        version,
+    ) is not None
 
 
 def port_depends_on_default_var(
@@ -220,7 +263,7 @@ def port_depends_on_default_var(
         )
 
     if overridden != baseline:
-        probe_appears = any(chosen_probe in v for v in overridden.values())
+        probe_appears = any(_probe_appears_in(v, chosen_probe) for v in overridden.values())
         return DependencyResult(
             status="depends",
             default_var=default_var,
@@ -233,6 +276,7 @@ def port_depends_on_default_var(
     return DependencyResult(status="independent", default_var=default_var, baseline=baseline)
 
 
+<<<<<<< HEAD
 # Mk/bsd.default-versions.mk is stable for the duration of a run, but
 # find_all_dependencies() is called once per port -- tens of thousands of
 # times for a whole tree. Re-reading the file and re-scanning its full
@@ -257,14 +301,45 @@ def _possible_values(repo_root: str, default_vars: list[str]) -> dict:
 
 
 def find_all_dependencies(
+=======
+@dataclass
+class PortCheckOutcome:
+    """
+    Everything one port's check produced, as opposed to
+    find_all_dependencies()'s convenience list of just the hits.
+
+    results        - the 'depends'/'depends_error' entries
+    checked_vars   - the variables CONCLUSIVELY evaluated this run. A
+                     variable appears here only if make actually
+                     answered for it, which is what lets a caller
+                     reconciling a database tell "checked, and now
+                     independent" (drop the stale row) apart from
+                     "could not be checked" (leave the row alone).
+                     This is exactly what sync_port_dependencies()'s
+                     checked_vars argument wants.
+    errors         - the 'error' entries: variables make could not
+                     evaluate, individually
+    baseline_error - set when the port could not be evaluated AT ALL
+                     (the no-overrides baseline call failed). Nothing
+                     was checked, so checked_vars is empty.
+    """
+    results: list[DependencyResult] = field(default_factory=list)
+    checked_vars: list[str] = field(default_factory=list)
+    errors: list[DependencyResult] = field(default_factory=list)
+    baseline_error: Optional[str] = None
+
+
+def check_port_dependencies(
+>>>>>>> c36729c6b46dd2dece2c7974e2b5fc8dfe6b1e8c
     port_dir: str,
     default_vars: list[str],
     repo_root: Optional[str] = None,
-) -> list[DependencyResult]:
+) -> PortCheckOutcome:
     """
     Check a port against a list of *_DEFAULT variable names (e.g. from
-    a live parse of Mk/bsd.default-versions.mk) and return only the
-    ones it actually depends on ('depends' or 'depends_error').
+    a live parse of Mk/bsd.default-versions.mk) and report which ones
+    it depends on, which ones were conclusively checked, and whether
+    the port could be evaluated at all.
 
     Raises MakeError if the port's own baseline `make -V` fails, and
     MakeOutputError if make's output can't be mapped to the variables
@@ -314,20 +389,29 @@ def find_all_dependencies(
     """
     possible_values_by_var = _possible_values(repo_root, default_vars) if repo_root else {}
 
-    def _slow_path() -> list[DependencyResult]:
-        results = []
+    def _slow_path() -> PortCheckOutcome:
+        outcome = PortCheckOutcome()
         for var in default_vars:
             r = port_depends_on_default_var(
                 port_dir, var, possible_values=possible_values_by_var.get(var)
             )
+            if r.status == "error":
+                # make couldn't answer for this variable, so we know
+                # nothing about it -- deliberately NOT recorded as
+                # checked, so callers don't read the absence of a
+                # 'depends' result as "independent".
+                outcome.errors.append(r)
+                continue
+            outcome.checked_vars.append(var)
             if r.status in ("depends", "depends_error"):
-                results.append(r)
-        return results
+                outcome.results.append(r)
+        return outcome
 
     # Combined baseline: PORTVERSION/DISTVERSION plus every variable's
     # current value, all in one call.
     rc, baseline_full, err = _run_make(port_dir, extra_vars=default_vars)
     if rc != 0:
+<<<<<<< HEAD
         # The port's own unmodified `make -V` failed, so nothing at all
         # can be concluded about it -- least of all "independent".
         # Returning [] here (which is what falling back to the slow path
@@ -340,6 +424,20 @@ def find_all_dependencies(
         # wipe known-good data. Fail loudly instead; bulk callers already
         # catch this per port, count it, and leave the DB untouched.
         raise MakeError(f"baseline `make -V` failed for {port_dir} (exit {rc}): {err}")
+=======
+        # The baseline failed with NO overrides applied, so this is
+        # the port (or the tree, or make) being unevaluable rather
+        # than anything to do with a particular variable -- a missing
+        # port directory, a broken Makefile, a tree that isn't fully
+        # checked out. Running the slow path here would just re-issue
+        # the same doomed command once per variable, so report the
+        # failure instead. checked_vars stays empty, which tells a
+        # caller reconciling a database to leave this port's existing
+        # rows alone rather than treating it as depending on nothing.
+        return PortCheckOutcome(
+            baseline_error=f"baseline `make -V` failed (exit {rc}): {err}",
+        )
+>>>>>>> c36729c6b46dd2dece2c7974e2b5fc8dfe6b1e8c
     baseline = {k: baseline_full[k] for k in VERSION_VARS}
 
     # Pick a probe value for every variable up front: a real
@@ -370,15 +468,39 @@ def find_all_dependencies(
     if rc2 == 0:
         overridden = {k: combined_overridden[k] for k in VERSION_VARS}
         if overridden == baseline:
-            # Fast path: overriding EVERY candidate variable at once
-            # changed nothing -- this port depends on none of them.
-            return []
+            # Fast path: overriding every TESTABLE candidate variable
+            # at once changed nothing -- this port depends on none of
+            # them. The untestable ones omitted from the override
+            # above are independent by definition (the slow path
+            # reports 'independent' for them too, without running
+            # anything), so every variable in default_vars counts as
+            # conclusively checked here.
+            return PortCheckOutcome(checked_vars=list(default_vars))
 
     # Something moved (or the combined override broke the build) --
     # fall back to testing each variable individually to attribute
     # the effect correctly. Only reached for ports that actually have
     # a dependency, so the extra cost is rare in aggregate.
     return _slow_path()
+
+
+def find_all_dependencies(
+    port_dir: str,
+    default_vars: list[str],
+    repo_root: Optional[str] = None,
+) -> list[DependencyResult]:
+    """
+    Convenience wrapper over check_port_dependencies(): just the
+    'depends'/'depends_error' results for a port, as a list.
+
+    NOTE: this collapses "checked, and depends on nothing" and "could
+    not be checked at all" into the same empty list. Anything that
+    writes these results to a database must call
+    check_port_dependencies() directly and honour its checked_vars,
+    or a port whose `make` calls failed will look independent and
+    have its existing rows deleted.
+    """
+    return check_port_dependencies(port_dir, default_vars, repo_root=repo_root).results
 
 
 if __name__ == "__main__":
@@ -420,6 +542,7 @@ if __name__ == "__main__":
             if v.active
         ]
 
+<<<<<<< HEAD
     try:
         deps = find_all_dependencies(args.port_dir, varnames, repo_root=repo_root)
     except (MakeError, MakeOutputError) as exc:
@@ -429,10 +552,28 @@ if __name__ == "__main__":
     if not deps:
         print(f"{args.port_dir}: no dependency on any checked *_DEFAULT variable")
         sys.exit(0)
+=======
+    outcome = check_port_dependencies(args.port_dir, varnames, repo_root=repo_root)
+>>>>>>> c36729c6b46dd2dece2c7974e2b5fc8dfe6b1e8c
 
-    for r in deps:
+    if outcome.baseline_error:
+        # Nothing was checked -- don't let this read as "no dependencies".
+        print(f"{args.port_dir}: could not be checked: {outcome.baseline_error}", file=sys.stderr)
+        sys.exit(2)
+
+    for r in outcome.errors:
+        print(f"{args.port_dir}: could not check {r.default_var}: {r.detail}", file=sys.stderr)
+
+    if not outcome.results:
+        print(
+            f"{args.port_dir}: no dependency on any of the "
+            f"{len(outcome.checked_vars)} *_DEFAULT variable(s) checked"
+        )
+    for r in outcome.results:
         print(f"{args.port_dir}: depends on {r.default_var} (status={r.status})")
         if r.baseline:
             print(f"  baseline:   {r.baseline}")
         if r.overridden:
             print(f"  overridden: {r.overridden}")
+
+    sys.exit(1 if outcome.errors else 0)
