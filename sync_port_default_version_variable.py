@@ -129,14 +129,15 @@ def sync_port_dependencies(
                 (port_id, default_version_variable_id, status,
                  baseline_portversion, baseline_distversion,
                  overridden_portversion, overridden_distversion,
-                 probe_value, detail, checked_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                 changed_vars, probe_value, detail, checked_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             ON CONFLICT (port_id, default_version_variable_id) DO UPDATE
             SET status = EXCLUDED.status,
                 baseline_portversion = EXCLUDED.baseline_portversion,
                 baseline_distversion = EXCLUDED.baseline_distversion,
                 overridden_portversion = EXCLUDED.overridden_portversion,
                 overridden_distversion = EXCLUDED.overridden_distversion,
+                changed_vars = EXCLUDED.changed_vars,
                 probe_value = EXCLUDED.probe_value,
                 detail = EXCLUDED.detail,
                 checked_at = now()
@@ -145,6 +146,9 @@ def sync_port_dependencies(
                 port_id, vid, r.status,
                 baseline.get("PORTVERSION"), baseline.get("DISTVERSION"),
                 overridden.get("PORTVERSION"), overridden.get("DISTVERSION"),
+                # NULL, not '{}', for depends_error: make failed, so which
+                # variables would have moved is unknown rather than "none".
+                r.changed_vars or None,
                 r.probe_value, r.detail,
             ),
         )

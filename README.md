@@ -32,8 +32,19 @@ This is two distinct problems, handled by two independent pieces of code:
 1. **Commit-triggered detection** — when a commit touches
    `Mk/bsd.default-versions.mk`, determine whether a specific `*_DEFAULT`
    variable's *value* actually changed (not just the file).
-2. **Port-level dependency detection** — determine whether a given port's
-   `PORTVERSION`/`DISTVERSION` depends on a given `*_DEFAULT` variable at all.
+2. **Port-level dependency detection** — determine whether anything FreshPorts
+   extracts from a given port with `make -V` depends on a given `*_DEFAULT`
+   variable at all.
+
+The version is only the most visible case. A `*_DEFAULT` change can alter what
+FreshPorts shows for a port while leaving `PORTVERSION` alone:
+
+```
+% make -C /usr/ports/archivers/R-cran-zip -V BUILD_DEPENDS
+R-cran-cli>=0:devel/R-cran-cli /usr/local/bin/R:math/R gfortran14:lang/gcc14 /usr/local/bin/as:devel/binutils
+% make -C /usr/ports/archivers/R-cran-zip -V BUILD_DEPENDS GCC_DEFAULT=1
+R-cran-cli>=0:devel/R-cran-cli /usr/local/bin/R:math/R gfortran1:lang/gcc1 /usr/local/bin/as:devel/binutils
+```
 
 ## Language split
 
@@ -185,14 +196,32 @@ against real Postgres and should be smoke-tested before production use).
 
 ### `port_default_version_deps.py`
 
-Determines whether a **specific port's** `PORTVERSION`/`DISTVERSION` depends on
-a given `*_DEFAULT` variable — by asking `make` itself via differential
+Determines whether anything FreshPorts extracts from a **specific port** depends
+on a given `*_DEFAULT` variable — by asking `make` itself via differential
 evaluation, not by parsing the port's Makefile.
 
-Technique:
-1. Baseline: `make -C <port_dir> -V PORTVERSION -V DISTVERSION`.
+The compared variables are `COMPARED_VARS`: the `make -V` list from FreshPorts'
+`scripts/Jail/scripts/make-port.sh`, plus `_MASTER_SITES_ALL` and `FLAVORS`
+(the other `-V`-only refresh extractions) and `DISTVERSION`. **Keep it in step
+with `make-port.sh`.** Refresh steps that run targets (`showconfig`,
+`generate-plist`, the pkg-message extract) are left out as too expensive to run
+per variable.
+
+Technique (every call also passes `PORTSDIR=<repo>`, as `make-port.sh` does, so
+values are evaluated against the tree being checked):
+1. Baseline: `make -C <port_dir> -V <each of COMPARED_VARS>`.
 2. Override: same command, plus `VARNAME=<probe value>` on the command line.
-3. Compare. A difference means the port's version depends on the variable.
+3. Compare. A difference in any compared variable means what FreshPorts shows
+   for the port depends on the variable; `DependencyResult.changed_vars` says
+   which ones moved.
+
+`check_port_dependencies()` shares one baseline across all variables, overrides
+every testable variable at once (a port that depends on nothing is done in two
+calls), and when something moves, bisects: it overrides each half of the group
+and descends only into halves that moved. With dependency lists compared, every
+`USES=python`/`perl5`/`ssl`/compiler port takes that path, so this matters —
+roughly a dozen calls for a port depending on one of 38 variables, instead of 76
+for testing each alone.
 
 **Probe value strategy matters.** The first version used a fake sentinel
 (`999999.freshports-probe`) for every check. Against real `lang/python`, this
@@ -210,14 +239,15 @@ back to the fake sentinel only when no real alternate is available (e.g.
 it with the assignment).
 
 - `port_depends_on_default_var(port_dir, default_var, probe_value=..., possible_values=...) -> DependencyResult`
-  — `status` is `depends` (value flowed through), `depends_error` (override
+  — `status` is `depends` (a compared value moved; see `.changed_vars`), `depends_error` (override
   broke the build — still evidence of a dependency, just not of the resulting
   value), `independent`, or `error` (baseline call itself failed).
 - `check_port_dependencies(port_dir, default_vars, repo_root=...) -> PortCheckOutcome`
   — checks a port against a list of variables, auto-loading `possible_values`
   for each from `repo_root` when given. Returns `.results` (the
   `depends`/`depends_error` entries), `.checked_vars` (the variables make
-  actually answered for), `.errors` (per-variable failures) and
+  actually answered for), `.errors` (per-variable failures; never produced by
+  the shared-baseline check, kept for callers) and
   `.baseline_error` (set when the port couldn't be evaluated at all — a missing
   directory, a broken Makefile — in which case nothing was checked).
 - `find_all_dependencies(port_dir, default_vars, repo_root=...) -> list[DependencyResult]`
@@ -362,6 +392,7 @@ every port that needs reprocessing.
 | `status` | `CHECK`-constrained to `depends`/`depends_error` only |
 | `baseline_portversion`, `baseline_distversion` | values with no override |
 | `overridden_portversion`, `overridden_distversion` | values with the probe applied; `NULL` when `status=depends_error` |
+| `changed_vars` | `text[]` of the compared variables that moved, e.g. `{BUILD_DEPENDS}`. A dependency needn't touch the version, so the version columns can be equal. `NULL` for `depends_error`, and for rows written before the column existed until re-checked |
 | `probe_value` | the value actually used — real alternate or fallback sentinel |
 | `detail` | error detail, for `depends_error` rows |
 
@@ -377,6 +408,13 @@ lookup: *"`PYTHON_DEFAULT` just changed — which ports depend on it?"*
 **Ordering dependency:** references `default_version_variable(id)`, so must be
 applied *after* `default_version_variable.sql` if your migration tooling
 doesn't already enforce explicit ordering.
+
+**Existing databases:** apply `0300-port_default_version_variable_changed_vars.sql`,
+which adds `changed_vars` (additive — the version columns stay) and updates the
+comments. It is a no-op for a fresh install built from `0200`. Then re-run
+`populate_port_default_version_deps.py` over the whole tree: existing rows only
+cover ports whose *version* depended on a variable, so the re-run is also what
+finds ports that depend through `BUILD_DEPENDS`, `FLAVORS` and the like.
 
 **Not run against a real Postgres instance**, same caveat as above.
 
