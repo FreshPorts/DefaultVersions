@@ -1,5 +1,23 @@
 # FreshPorts `*_DEFAULT` Variable Tracking
 
+> [!IMPORTANT]
+> **Superseded; this repository is archived.** FreshPorts no longer uses this code.
+> Ports whose version changes without a commit to the port are now found by
+> [`compare-index.sh`](https://github.com/FreshPorts/ingress-scripts/blob/main/compare-index.sh),
+> which compares the database against the ports `INDEX` and passes the ports that
+> differ to `refresh-from-index.sh` and `refresh-listed-ports.pl`. That catches every
+> kind of out-of-port version change, not only `*_DEFAULT` variables, without
+> parsing `Mk/bsd.default-versions.mk`.
+>
+> The pieces that tied this repository into FreshPorts were removed on 2026-10-31:
+> `process_default_versions.pl` in ingress-scripts 2.3.6, the
+> `Mk/bsd.default-versions.mk` signal in ingress-modules 2.3.5, and the
+> `default_version_variable` and `port_default_version_variable` tables
+> (database-schema `updates-2026-10-31-drop-default-version-variable.ddl`).
+> FreshPorts/freshports#659 and FreshPorts/freshports#509 are closed.
+>
+> The rest of this README describes the design as it stood, for reference.
+
 Technical documentation for the code implementing [FreshPorts issue #659](https://github.com/FreshPorts/freshports/issues/659):
 detecting when `*_DEFAULT` variables in `Mk/bsd.default-versions.mk` change, and
 identifying which ports depend on them.
